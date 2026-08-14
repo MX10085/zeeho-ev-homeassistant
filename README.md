@@ -85,6 +85,17 @@ image: /local/zeeho/ae6_car.png
 
 或将 `image.zeeho_ev_*_image` 实体用于媒体卡片显示车辆照片。
 
+## 🙏 致谢
+
+本项目基于 [zhoujunn/zeeho](https://github.com/zhoujunn/zeeho) 的集成框架开发，感谢原作者的开源分享。
+
+与之相比，本项目的主要改进与区别：
+- **手机号 + 短信验证码登录**（原版需手动填写 Token / VIN）
+- **自动发现车辆**，无需手动配置
+- **地址反地理编码**（GCJ-02 坐标转换 + OpenStreetMap，显示小区/街道名）
+- 更多车辆数据实体（总里程、续航、OTA、信号等）
+- 登录令牌自动续期提醒
+
 ## ⚠️ 免责声明
 
 - 本项目**非官方**，与极核（ZEEHO）/ 春风动力（CFMOTO）无任何关联
