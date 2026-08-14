@@ -1,0 +1,57 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "ZEEHO EV（极核）登录",
+        "description": "请输入极核 App 绑定的手机号，点击下一步后将发送短信验证码。",
+        "data": {
+          "phone": "手机号"
+        }
+      },
+      "code": {
+        "title": "输入验证码",
+        "description": "验证码已发送至 {phone}，请输入短信中的验证码完成登录。",
+        "data": {
+          "auth_code": "短信验证码"
+        }
+      }
+    },
+    "error": {
+      "invalid_phone": "请输入 11 位手机号。",
+      "invalid_code": "验证码无效或已过期，请重试。",
+      "send_failed": "验证码发送失败，请稍后重试。",
+      "cannot_connect": "无法连接到极核服务器。",
+      "auth": "登录失败，请检查手机号和验证码。",
+      "no_vehicle": "该账号下未找到共享的车辆。"
+    },
+    "abort": {
+      "already_configured": "该车辆已经配置过了。"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "重新登录（续期）",
+        "description": "极核登录令牌约 10 天过期。输入手机号并点击下一步发送验证码，完成续期。",
+        "data": {
+          "phone": "手机号"
+        }
+      },
+      "code": {
+        "title": "输入验证码",
+        "description": "验证码已发送至 {phone}，请输入短信中的验证码。",
+        "data": {
+          "auth_code": "短信验证码"
+        }
+      }
+    },
+    "error": {
+      "invalid_phone": "请输入 11 位手机号。",
+      "invalid_code": "验证码无效或已过期，请重试。",
+      "send_failed": "验证码发送失败，请稍后重试。",
+      "cannot_connect": "无法连接到极核服务器。",
+      "auth": "登录失败，请检查手机号和验证码。",
+      "no_vehicle": "该账号下未找到共享的车辆。"
+    }
+  }
+}
