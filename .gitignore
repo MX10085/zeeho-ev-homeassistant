@@ -2,3 +2,9 @@
 docs/share/
 docs/*.docx
 docs/bbs-post*.md
+
+# 发布包与缓存
+zeeho_ev-*.zip
+zeeho_ev-*.tar.gz
+__pycache__/
+*.pyc
