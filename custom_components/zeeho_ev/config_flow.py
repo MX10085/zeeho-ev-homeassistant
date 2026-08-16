@@ -202,7 +202,9 @@ class ZeehoOptionsFlow(config_entries.OptionsFlow):
     """选项流程：token 过期时重新验证码登录。"""
 
     def __init__(self, config_entry):
-        self.config_entry = config_entry
+        # 注意：新版 HA 的 OptionsFlow.config_entry 是只读 property（运行时从
+        # hass.config_entries 动态获取），不能在 __init__ 里赋值；构造参数
+        # config_entry 作为局部变量仍可用来读取初始数据。
         self._phone = (config_entry.data.get(CONF_PHONE) or "").strip()
 
     async def async_step_init(self, user_input=None):
