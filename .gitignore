@@ -1,4 +1,4 @@
-__pycache__/
-*.pyc
-.DS_Store
-*.tar.gz
+# 本地发帖素材（可能含隐私信息，勿提交）
+docs/share/
+docs/*.docx
+docs/bbs-post*.md
