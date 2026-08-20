@@ -12,6 +12,9 @@ from .const import (
     API_OK_CODE,
     API_URL,
     BASIC_AUTH,
+    CONF_APP_ID,
+    CONF_APP_SECRET,
+    CONF_BASIC_AUTH,
     CONF_CODE,
     CONF_PHONE,
     CONF_TOKEN,
@@ -28,11 +31,13 @@ AUTH_CODE_PATH = "/authCode/"
 LOGIN_PATH = "/user/loginByPhone"
 
 
-def _send_code(phone):
+def _send_code(phone, app_id=None, app_secret=None):
     """发送短信验证码。返回 (ok, message)。"""
     url = MINE_BASE + AUTH_CODE_PATH + phone
     try:
-        resp = requests.get(url, headers=_build_headers(url), timeout=15)
+        resp = requests.get(
+            url, headers=_build_headers(url, app_id, app_secret), timeout=15
+        )
     except requests.RequestException as err:
         _LOGGER.error("Zeeho 发送验证码失败：%s", err)
         return False, "cannot_connect"
@@ -45,14 +50,15 @@ def _send_code(phone):
     return True, ""
 
 
-def _login_by_code(phone, code):
+def _login_by_code(phone, code, app_id=None, app_secret=None, basic_auth=None):
     """验证码登录。返回 (token_info, vin, err)。
     token_info 含 access_token / refresh_token / expires_in；err 为错误 key 或 ""。
+    凭据可从参数传入（配置条目优先），缺省回退到 const 默认值。
     """
     url = MINE_BASE + LOGIN_PATH
     payload = {"phone": phone, "authCode": code}
-    headers = _build_headers(url)
-    headers["Authorization"] = BASIC_AUTH
+    headers = _build_headers(url, app_id, app_secret)
+    headers["Authorization"] = basic_auth or BASIC_AUTH
     try:
         resp = requests.post(
             url, json=payload, headers=headers, timeout=20
@@ -82,18 +88,18 @@ def _login_by_code(phone, code):
         return None, None, "invalid_code"
 
     # 通过 vehicleHomePage 自动获取 VIN（登录后第一个可访问的车辆）
-    vin = _fetch_vin(access_token)
+    vin = _fetch_vin(access_token, app_id, app_secret)
     return token_info, vin, ""
 
 
-def _fetch_vin(token):
+def _fetch_vin(token, app_id=None, app_secret=None):
     """用 token 查询车辆列表，返回第一个 VIN（接口返回的是列表，字段名 vinNo）。"""
     url = API_URL
     try:
         resp = requests.get(
             url,
             headers={
-                **_build_headers(url),
+                **_build_headers(url, app_id, app_secret),
                 "Authorization": f"Bearer {token}",
                 "Accept": "*/*",
             },
@@ -134,23 +140,39 @@ class ZeehoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self):
         self._phone = None
+        # 可选凭据覆盖（留空 = 使用 const.py 内置默认值）
+        self._app_id = ""
+        self._app_secret = ""
+        self._basic_auth = ""
 
     async def async_step_user(self, user_input=None):
-        """第一步：输入手机号并发送验证码。"""
+        """第一步：输入手机号（可选填自定义凭据）并发送验证码。"""
         errors = {}
         if user_input is not None:
             phone = (user_input.get(CONF_PHONE) or "").strip()
+            self._app_id = (user_input.get(CONF_APP_ID) or "").strip()
+            self._app_secret = (user_input.get(CONF_APP_SECRET) or "").strip()
+            self._basic_auth = (user_input.get(CONF_BASIC_AUTH) or "").strip()
             if not phone or len(phone) != 11:
                 errors[CONF_PHONE] = "invalid_phone"
             else:
-                ok, err = await self.hass.async_add_executor_job(_send_code, phone)
+                ok, err = await self.hass.async_add_executor_job(
+                    _send_code, phone, self._app_id or None, self._app_secret or None
+                )
                 if not ok:
                     errors["base"] = err
                 else:
                     self._phone = phone
                     return await self.async_step_code()
 
-        schema = vol.Schema({vol.Required(CONF_PHONE): str})
+        schema = vol.Schema(
+            {
+                vol.Required(CONF_PHONE): str,
+                vol.Optional(CONF_APP_ID, default=""): str,
+                vol.Optional(CONF_APP_SECRET, default=""): str,
+                vol.Optional(CONF_BASIC_AUTH, default=""): str,
+            }
+        )
         return self.async_show_form(
             step_id="user", data_schema=schema, errors=errors,
             description_placeholders={},
@@ -165,7 +187,12 @@ class ZeehoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 errors[CONF_CODE] = "invalid_code"
             else:
                 token_info, vin, err = await self.hass.async_add_executor_job(
-                    _login_by_code, self._phone, code
+                    _login_by_code,
+                    self._phone,
+                    code,
+                    self._app_id or None,
+                    self._app_secret or None,
+                    self._basic_auth or None,
                 )
                 if err:
                     errors["base"] = err
@@ -176,14 +203,22 @@ class ZeehoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._abort_if_unique_id_configured()
                     expires_in = int(token_info.get("expires_in") or 863999)
                     import time
+                    data = {
+                        CONF_TOKEN: token_info["access_token"],
+                        CONF_VIN: vin,
+                        CONF_PHONE: self._phone,
+                        CONF_TOKEN_EXPIRES_AT: int(time.time()) + expires_in,
+                    }
+                    # 仅保存非空的自定义凭据，留空则运行时回退 const 默认值
+                    if self._app_id:
+                        data[CONF_APP_ID] = self._app_id
+                    if self._app_secret:
+                        data[CONF_APP_SECRET] = self._app_secret
+                    if self._basic_auth:
+                        data[CONF_BASIC_AUTH] = self._basic_auth
                     return self.async_create_entry(
                         title=f"ZEEHO EV {vin}",
-                        data={
-                            CONF_TOKEN: token_info["access_token"],
-                            CONF_VIN: vin,
-                            CONF_PHONE: self._phone,
-                            CONF_TOKEN_EXPIRES_AT: int(time.time()) + expires_in,
-                        },
+                        data=data,
                     )
 
         schema = vol.Schema({vol.Required(CONF_CODE): str})
@@ -206,6 +241,10 @@ class ZeehoOptionsFlow(config_entries.OptionsFlow):
         # hass.config_entries 动态获取），不能在 __init__ 里赋值；构造参数
         # config_entry 作为局部变量仍可用来读取初始数据。
         self._phone = (config_entry.data.get(CONF_PHONE) or "").strip()
+        # 沿用配置条目中保存的自定义凭据（无则回退 const 默认值）
+        self._app_id = (config_entry.data.get(CONF_APP_ID) or "").strip()
+        self._app_secret = (config_entry.data.get(CONF_APP_SECRET) or "").strip()
+        self._basic_auth = (config_entry.data.get(CONF_BASIC_AUTH) or "").strip()
 
     async def async_step_init(self, user_input=None):
         """第一步：确认手机号并发送验证码。"""
@@ -215,7 +254,9 @@ class ZeehoOptionsFlow(config_entries.OptionsFlow):
             if not phone or len(phone) != 11:
                 errors[CONF_PHONE] = "invalid_phone"
             else:
-                ok, err = await self.hass.async_add_executor_job(_send_code, phone)
+                ok, err = await self.hass.async_add_executor_job(
+                    _send_code, phone, self._app_id or None, self._app_secret or None
+                )
                 if not ok:
                     errors["base"] = err
                 else:
@@ -234,7 +275,12 @@ class ZeehoOptionsFlow(config_entries.OptionsFlow):
                 errors[CONF_CODE] = "invalid_code"
             else:
                 token_info, vin, err = await self.hass.async_add_executor_job(
-                    _login_by_code, self._phone, code
+                    _login_by_code,
+                    self._phone,
+                    code,
+                    self._app_id or None,
+                    self._app_secret or None,
+                    self._basic_auth or None,
                 )
                 if err:
                     errors["base"] = err

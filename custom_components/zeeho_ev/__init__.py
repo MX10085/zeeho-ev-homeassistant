@@ -19,6 +19,8 @@ from .const import (
     API_URL,
     APP_ID,
     APP_SECRET,
+    CONF_APP_ID,
+    CONF_APP_SECRET,
     CONF_TOKEN,
     CONF_TOKEN_EXPIRES_AT,
     CONF_VIN,
@@ -38,11 +40,16 @@ def _get_nonce():
     return rand16 + str(int(time.time() * 1000))
 
 
-def _build_headers(url):
-    """按 RequestSignInterceptor 逻辑生成签名 headers（GET 无 body）。"""
+def _build_headers(url, app_id=None, app_secret=None):
+    """按 RequestSignInterceptor 逻辑生成签名 headers（GET 无 body）。
+
+    凭据可从参数传入（优先取配置条目中的值），缺省时回退到 const 默认值。
+    """
+    app_id = app_id or APP_ID
+    app_secret = app_secret or APP_SECRET
     nonce = _get_nonce()
     ts = str(int(time.time() * 1000))
-    param_str = f"appId={APP_ID}&nonce={nonce}&timestamp={ts}"
+    param_str = f"appId={app_id}&nonce={nonce}&timestamp={ts}"
 
     parsed = urllib.parse.urlsplit(url)
     # GET: preSign = scheme://host:port/encodedPath + (?sortedQuery) + param + secret
@@ -55,14 +62,14 @@ def _build_headers(url):
             f"{k}={urllib.parse.quote(v, safe='~')}" for k, v in pairs
         )
         pre_sign += "?" + enc
-    pre_sign += param_str + APP_SECRET
+    pre_sign += param_str + app_secret
 
     signature = hashlib.md5(
         hashlib.sha1(pre_sign.encode("utf-8")).hexdigest().encode("utf-8")
     ).hexdigest()
 
     return {
-        "appId": APP_ID,
+        "appId": app_id,
         "nonce": nonce,
         "timestamp": ts,
         "signature": signature,
@@ -223,6 +230,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     token = entry.data[CONF_TOKEN]
     vin = entry.data[CONF_VIN]
     url = f"{API_URL}{vin}"
+    # 凭据优先取配置条目（防公开仓库泄露），缺省回退到 const 默认值
+    app_id = entry.data.get(CONF_APP_ID) or APP_ID
+    app_secret = entry.data.get(CONF_APP_SECRET) or APP_SECRET
 
     async def _notify_relogin():
         """发通知引导用户在选项里重新验证码登录。"""
@@ -251,7 +261,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     async def async_update_data():
         """从极核 API 拉取车辆数据（vehicleHomePage 聚合接口）。"""
-        headers = _build_headers(url)
+        headers = _build_headers(url, app_id, app_secret)
         headers["Authorization"] = f"Bearer {token}"
         headers["Accept"] = "*/*"
         try:
