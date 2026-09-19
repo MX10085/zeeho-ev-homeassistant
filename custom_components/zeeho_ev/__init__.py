@@ -1,5 +1,4 @@
 """Zeeho（极核）电动车 Home Assistant 集成。"""
-import asyncio
 import hashlib
 import logging
 import math
@@ -20,25 +19,17 @@ from .const import (
     API_URL,
     APP_ID,
     APP_SECRET,
-    BASIC_AUTH,
     CONF_APP_ID,
     CONF_APP_SECRET,
-    CONF_BASIC_AUTH,
-    CONF_REFRESH_TOKEN,
-    CONF_REFRESH_TOKEN_EXPIRES_AT,
     CONF_TOKEN,
     CONF_TOKEN_EXPIRES_AT,
     CONF_VIN,
     DOMAIN,
-    MINE_BASE,
-    REFRESH_PATH,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(minutes=1)
-REFRESH_BEFORE_EXPIRY = 24 * 60 * 60
-REFRESH_RETRY_INTERVAL = 6 * 60 * 60
 
 
 def _get_nonce():
@@ -236,94 +227,12 @@ async def async_setup(hass: HomeAssistant, config: dict):
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     """根据配置条目设置 zeeho。"""
     session = aiohttp.ClientSession()
-    token_state = {
-        "access_token": entry.data[CONF_TOKEN],
-        "refresh_token": entry.data.get(CONF_REFRESH_TOKEN),
-        "expires_at": entry.data.get(CONF_TOKEN_EXPIRES_AT) or 0,
-        "next_attempt": 0,
-    }
-    refresh_lock = asyncio.Lock()
+    token = entry.data[CONF_TOKEN]
     vin = entry.data[CONF_VIN]
     url = f"{API_URL}{vin}"
     # 凭据优先取配置条目（防公开仓库泄露），缺省回退到 const 默认值
     app_id = entry.data.get(CONF_APP_ID) or APP_ID
     app_secret = entry.data.get(CONF_APP_SECRET) or APP_SECRET
-    basic_auth = entry.data.get(CONF_BASIC_AUTH) or BASIC_AUTH
-
-    async def _refresh_access_token():
-        """用 refresh token 换取并持久化新 token。失败时保留旧 token。"""
-        refresh_token = token_state.get("refresh_token")
-        now = time.time()
-        if not refresh_token:
-            return False
-        if now < token_state["next_attempt"]:
-            return False
-
-        async with refresh_lock:
-            now = time.time()
-            if now < token_state["next_attempt"]:
-                return False
-            token_state["next_attempt"] = now + REFRESH_RETRY_INTERVAL
-            refresh_url = MINE_BASE + REFRESH_PATH
-            headers = _build_headers(refresh_url, app_id, app_secret)
-            headers["Authorization"] = basic_auth
-            try:
-                async with session.post(
-                    refresh_url,
-                    json={"refreshToken": refresh_token},
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=20),
-                ) as resp:
-                    if resp.status != 200:
-                        _LOGGER.warning("极核令牌刷新失败：HTTP %s", resp.status)
-                        return False
-                    body = await resp.json()
-            except (aiohttp.ClientError, ValueError, TypeError) as err:
-                _LOGGER.warning("极核令牌刷新失败：%s", type(err).__name__)
-                return False
-
-            if body.get("code") != API_OK_CODE:
-                _LOGGER.warning(
-                    "极核令牌刷新失败：code=%s message=%s",
-                    body.get("code"),
-                    body.get("message", "未知"),
-                )
-                return False
-
-            result = body.get("data") or {}
-            token_info = result.get("tokenInfo") or result
-            access_token = token_info.get("access_token")
-            if not access_token:
-                _LOGGER.warning("极核令牌刷新响应缺少 access_token")
-                return False
-
-            expires_in = int(token_info.get("expires_in") or 863999)
-            new_refresh_token = token_info.get("refresh_token") or refresh_token
-            expires_at = int(time.time()) + expires_in
-            new_data = dict(entry.data)
-            new_data[CONF_TOKEN] = access_token
-            new_data[CONF_REFRESH_TOKEN] = new_refresh_token
-            new_data[CONF_TOKEN_EXPIRES_AT] = expires_at
-            refresh_expires_in = (
-                token_info.get("refresh_expires_in")
-                or token_info.get("refresh_token_expires_in")
-            )
-            if refresh_expires_in:
-                new_data[CONF_REFRESH_TOKEN_EXPIRES_AT] = (
-                    int(time.time()) + int(refresh_expires_in)
-                )
-            hass.config_entries.async_update_entry(entry, data=new_data)
-            token_state.update(
-                access_token=access_token,
-                refresh_token=new_refresh_token,
-                expires_at=expires_at,
-                next_attempt=0,
-            )
-            hass.components.persistent_notification.async_dismiss(
-                "zeeho_ev_relogin"
-            )
-            _LOGGER.info("极核访问令牌已自动续期")
-            return True
 
     async def _notify_relogin():
         """发通知引导用户在选项里重新验证码登录。"""
@@ -352,40 +261,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
 
     async def async_update_data():
         """从极核 API 拉取车辆数据（vehicleHomePage 聚合接口）。"""
-        expires_at = token_state.get("expires_at") or 0
-        if expires_at and expires_at - time.time() <= REFRESH_BEFORE_EXPIRY:
-            await _refresh_access_token()
-
-        async def _request_vehicle_data():
-            headers = _build_headers(url, app_id, app_secret)
-            headers["Authorization"] = f"Bearer {token_state['access_token']}"
-            headers["Accept"] = "*/*"
-            return await session.get(
-                url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
-            )
-
+        headers = _build_headers(url, app_id, app_secret)
+        headers["Authorization"] = f"Bearer {token}"
+        headers["Accept"] = "*/*"
         try:
-            async with await _request_vehicle_data() as resp:
+            async with session.get(
+                url, headers=headers, timeout=aiohttp.ClientTimeout(total=30)
+            ) as resp:
                 if resp.status in (401, 403):
-                    refreshed = await _refresh_access_token()
-                    if refreshed:
-                        async with await _request_vehicle_data() as retry_resp:
-                            if retry_resp.status == 200:
-                                data = await retry_resp.json()
-                            else:
-                                await _notify_relogin()
-                                raise UpdateFailed(
-                                    f"令牌刷新后重试失败：HTTP {retry_resp.status}"
-                                )
-                    else:
-                        await _notify_relogin()
-                        raise UpdateFailed(
-                            "认证失败：自动续期失败，请在「设备与服务 → 极核 → 选项」里重新登录"
-                        )
-                elif resp.status != 200:
+                    await _notify_relogin()
+                    raise UpdateFailed(
+                        "认证失败：token 已失效，请在「设备与服务 → 极核 → 选项」里重新登录"
+                    )
+                if resp.status != 200:
                     raise UpdateFailed(f"API 请求失败：HTTP {resp.status}")
-                else:
-                    data = await resp.json()
+                data = await resp.json()
         except aiohttp.ClientError as err:
             # 网络 / DNS / 连接超时等
             raise UpdateFailed(

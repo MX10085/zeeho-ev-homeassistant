@@ -14,8 +14,6 @@ CONF_APP_ID = "app_id"
 CONF_APP_SECRET = "app_secret"
 CONF_BASIC_AUTH = "basic_auth"
 
-REFRESH_PATH = "/user/refreshToken"
-
 # ---------------------------------------------------------------------------
 # 极核 API 凭据（登录 Basic、签名 APP_ID/APP_SECRET，逆向自 App）
 #
