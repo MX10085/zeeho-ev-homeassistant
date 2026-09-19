@@ -22,7 +22,6 @@ from .const import (
     CONF_APP_ID,
     CONF_APP_SECRET,
     CONF_TOKEN,
-    CONF_TOKEN_EXPIRES_AT,
     CONF_VIN,
     DOMAIN,
 )
@@ -30,6 +29,11 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 SCAN_INTERVAL = timedelta(minutes=1)
+KEEPALIVE_INTERVAL = timedelta(days=1)
+KEEPALIVE_URL = (
+    "https://tapi.zeehoev.com/v1.0/app/cfmotoserverapp/"
+    "app/scoreguiding/openApplication"
+)
 
 
 def _get_nonce():
@@ -40,8 +44,8 @@ def _get_nonce():
     return rand16 + str(int(time.time() * 1000))
 
 
-def _build_headers(url, app_id=None, app_secret=None):
-    """按 RequestSignInterceptor 逻辑生成签名 headers（GET 无 body）。
+def _build_headers(url, app_id=None, app_secret=None, method="GET", body=""):
+    """按官方 RequestSignInterceptor 逻辑生成签名 headers。
 
     凭据可从参数传入（优先取配置条目中的值），缺省时回退到 const 默认值。
     """
@@ -52,16 +56,17 @@ def _build_headers(url, app_id=None, app_secret=None):
     param_str = f"appId={app_id}&nonce={nonce}&timestamp={ts}"
 
     parsed = urllib.parse.urlsplit(url)
-    # GET: preSign = scheme://host:port/encodedPath + (?sortedQuery) + param + secret
-    pre_sign = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    if parsed.query:
-        pairs = sorted(
-            urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
-        )
-        enc = "&".join(
-            f"{k}={urllib.parse.quote(v, safe='~')}" for k, v in pairs
-        )
-        pre_sign += "?" + enc
+    pairs = sorted(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+    encoded_query = "&".join(
+        f"{k}={urllib.parse.quote(v, safe='~')}" for k, v in pairs
+    )
+    if method.upper() == "GET":
+        pre_sign = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+        if encoded_query:
+            pre_sign += "?" + encoded_query
+    else:
+        # 官方 POST/PUT 签名只包含 query + 原始 body，不包含 URL。
+        pre_sign = encoded_query + body
     pre_sign += param_str + app_secret
 
     signature = hashlib.md5(
@@ -250,14 +255,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
             },
         )
 
-    async def _check_token_expiry(_now=None):
-        """每天检查 token 剩余有效期，快过期（≤2 天）时提醒。"""
-        expires_at = entry.data.get(CONF_TOKEN_EXPIRES_AT) or 0
-        if not expires_at:
-            return
-        remaining = expires_at - time.time()
-        if remaining <= 2 * 86400:
-            await _notify_relogin()
+    async def _keep_session_active(_now=None):
+        """模拟官方 App 进入前台时的轻量会话保活。
+
+        登录响应里的 expires_in 仅作诊断参考。官方 App 不按该时间主动
+        注销，而是持续使用当前 token，直到服务端真正返回 401/403。
+        """
+        headers = _build_headers(
+            KEEPALIVE_URL, app_id, app_secret, method="POST", body=""
+        )
+        headers["Authorization"] = f"Bearer {token}"
+        headers["Accept"] = "*/*"
+        try:
+            async with session.post(
+                KEEPALIVE_URL,
+                headers=headers,
+                data=b"",
+                timeout=aiohttp.ClientTimeout(total=15),
+            ) as resp:
+                if resp.status in (401, 403):
+                    await _notify_relogin()
+                    return
+                if resp.status != 200:
+                    _LOGGER.debug("极核会话保活返回 HTTP %s", resp.status)
+                    return
+                body = await resp.json(content_type=None)
+                if body.get("code") != API_OK_CODE:
+                    _LOGGER.debug(
+                        "极核会话保活返回 code=%s message=%s",
+                        body.get("code"),
+                        body.get("message"),
+                    )
+        except (aiohttp.ClientError, ValueError, TypeError) as err:
+            # 保活失败不能影响车辆数据更新；下一次周期会自动重试。
+            _LOGGER.debug("极核会话保活失败：%s", err)
 
     async def async_update_data():
         """从极核 API 拉取车辆数据（vehicleHomePage 聚合接口）。"""
@@ -317,12 +348,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {"coordinator": coordinator, "session": session}
 
-    # 每天检查一次 token 剩余有效期，快过期时提醒
+    # 官方 App 每次进入前台都会调用 openApplication。这里每天模拟一次，
+    # 同时不再依据 expires_in 主动要求用户重新验证码登录。
     from homeassistant.helpers.event import async_track_time_interval
     entry.async_on_unload(
-        async_track_time_interval(hass, _check_token_expiry, timedelta(days=1))
+        async_track_time_interval(hass, _keep_session_active, KEEPALIVE_INTERVAL)
     )
-    await _check_token_expiry()
+    await _keep_session_active()
 
     await hass.config_entries.async_forward_entry_setups(
         entry, ["sensor", "device_tracker", "image"]
