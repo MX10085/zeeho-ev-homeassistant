@@ -17,6 +17,8 @@ from .const import (
     CONF_BASIC_AUTH,
     CONF_CODE,
     CONF_PHONE,
+    CONF_REFRESH_TOKEN,
+    CONF_REFRESH_TOKEN_EXPIRES_AT,
     CONF_TOKEN,
     CONF_TOKEN_EXPIRES_AT,
     CONF_VIN,
@@ -29,6 +31,26 @@ _LOGGER = logging.getLogger(__name__)
 
 AUTH_CODE_PATH = "/authCode/"
 LOGIN_PATH = "/user/loginByPhone"
+
+
+def _token_entry_data(token_info, now):
+    """把登录/刷新响应转换成配置条目字段。"""
+    expires_in = int(token_info.get("expires_in") or 863999)
+    data = {
+        CONF_TOKEN: token_info["access_token"],
+        CONF_TOKEN_EXPIRES_AT: int(now) + expires_in,
+    }
+    refresh_token = token_info.get("refresh_token")
+    if refresh_token:
+        data[CONF_REFRESH_TOKEN] = refresh_token
+
+    refresh_expires_in = (
+        token_info.get("refresh_expires_in")
+        or token_info.get("refresh_token_expires_in")
+    )
+    if refresh_expires_in:
+        data[CONF_REFRESH_TOKEN_EXPIRES_AT] = int(now) + int(refresh_expires_in)
+    return data
 
 
 def _send_code(phone, app_id=None, app_secret=None):
@@ -201,13 +223,11 @@ class ZeehoConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     await self.async_set_unique_id(vin)
                     self._abort_if_unique_id_configured()
-                    expires_in = int(token_info.get("expires_in") or 863999)
                     import time
                     data = {
-                        CONF_TOKEN: token_info["access_token"],
                         CONF_VIN: vin,
                         CONF_PHONE: self._phone,
-                        CONF_TOKEN_EXPIRES_AT: int(time.time()) + expires_in,
+                        **_token_entry_data(token_info, time.time()),
                     }
                     # 仅保存非空的自定义凭据，留空则运行时回退 const 默认值
                     if self._app_id:
@@ -286,11 +306,9 @@ class ZeehoOptionsFlow(config_entries.OptionsFlow):
                     errors["base"] = err
                 else:
                     import time
-                    expires_in = int(token_info.get("expires_in") or 863999)
                     data = dict(self.config_entry.data)
-                    data[CONF_TOKEN] = token_info["access_token"]
                     data[CONF_PHONE] = self._phone
-                    data[CONF_TOKEN_EXPIRES_AT] = int(time.time()) + expires_in
+                    data.update(_token_entry_data(token_info, time.time()))
                     # 更新 config entry 并强制重载，让新 token 生效
                     self.hass.config_entries.async_update_entry(self.config_entry, data=data)
                     await self.hass.config_entries.async_reload(self.config_entry.entry_id)
